@@ -1,0 +1,369 @@
+<html>
+	<head>
+		<script src="./scripts/jquery.min.js"></script>
+		<script src="./scripts/three.min.js"></script>
+		
+		<script src="./scripts/Detector.js"></script>
+		<script src="./scripts/dat.gui.min.js"></script>
+		<script src="./scripts/stats.min.js"></script>
+		<script src="./shaderLoader.js"></script>
+		
+		<script src="./simulationRenderer.js"></script>
+		
+		<script src="./shaders/vertexShader.glsl" id="vertexShader" type="x-shader/x-vertex"></script>
+
+		<script src="./shaders/fragmentShader.glsl" id="fragmentShader" type="x-shader/x-fragment"></script>
+		
+		<script src="./shaders/pointVS.glsl" id="pointVS" type="x-shader/x-vertex"></script>
+
+		<script src="./shaders/pointFS.glsl" id="pointFS" type="x-shader/x-fragment"></script>
+		
+		<script src="./shaders/backgroundVertexShader.glsl" id="backgroundVertexShader" type="x-shader/x-vertex"></script>
+		
+		<script src="./shaders/backgroundFragmentShaderPosition.glsl" id="backgroundFragmentShaderPosition" type="x-shader/x-fragment"></script>
+		
+		<script src="./shaders/fragmentShaderPosition.glsl" id="fragmentShaderPosition" type="x-shader/x-fragment"></script>
+		
+		<script src="./shaders/fragmentShaderForce.glsl" id="fragmentShaderForce" type="x-shader/x-fragment"></script>
+		
+		<script>
+		
+		var container, camera, scene, renderer, mesh, simulator, width, WIDTH, stats, container, effectController, backgroundMesh;
+		
+		function animate()
+		{
+			requestAnimationFrame(animate);
+			render();
+		}
+		
+		var last = performance.now();
+
+		function render()
+		{
+			var now = performance.now()
+			var delta = (now - last) / 1000;
+
+			if (delta > 1)
+				delta = 1; // safety cap on large deltas
+			last = now;
+			
+			if (typeof(simulator) != "undefined")
+			{
+				simulator.simulate(delta);
+			}
+			
+			if (typeof(birdUniforms) != "undefined")
+			{
+				birdUniforms.time.value = now;
+				birdUniforms.delta.value = delta;
+				birdUniforms.texturePosition.value = simulator.getPos();
+				birdUniforms.pointSize.value = effectController.PointSize;
+				birdUniforms.pointAlpha.value = effectController.PointAlpha;
+
+				simulator.brushRandom = effectController.BrushRandom;
+				simulator.brushSize = effectController.BrushSize;
+			}
+			
+			stats.update();
+	
+			renderer.render(scene, camera);
+		}
+		
+		function setupParticles(particles)
+		{
+			console.log("Particle count: " + particles);
+				
+			simulator = new SimulationRenderer(Math.sqrt(particles), renderer, effectController);
+			simulator.init();
+			
+			{
+				var geometry = new THREE.BufferGeometry();
+
+				var positions = new Float32Array( particles * 3 );
+				{
+					for ( var i = 0, j = 0; i < positions.length; i += 2, j++ )
+					{
+						positions[i + 0] = Math.floor(j / Math.sqrt(particles));
+						positions[i + 1] = Math.floor(j % Math.sqrt(particles));
+					}
+				}
+				
+				var colors = new Float32Array( particles * 3 );
+				{
+					for ( var i = 0, j = 0; i < positions.length; i += 3, j++ )
+					{
+						var color = new THREE.Color();
+						color.setRGB(Math.random(), Math.random(), Math.random());
+
+						colors[i + 0] = color.r;
+						colors[i + 1] = color.g;
+						colors[i + 2] = color.b;
+					}
+				}
+
+				geometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 2 ) );
+				geometry.addAttribute( 'birdColor', new THREE.BufferAttribute( colors, 3 ) );
+
+				geometry.computeBoundingSphere();
+			}
+			
+			{
+				birdAttributes = 
+				{
+					birdColor:  { type: 'c', value: null },
+					reference:  { type: 'v2',value: null },
+					birdVertex: { type: 'f', value: null },
+				};
+				
+				birdUniforms =
+				{
+					color: { type: "c", value: new THREE.Color( 0xff2200 ) },
+					texturePosition: { type: "t", value: null },
+					textureVelocity: { type: "t", value: null },
+					time: { type: "f", value: 1.0 },
+					delta: { type: "f", value: 0.0 },
+					textureResolution: { type: "f", value: Math.sqrt(particles) },
+					pointSize: { type: "f", value: effectController.PointSize },
+					pointAlpha: { type: "f", value: effectController.PointAlpha },
+				};
+				
+				var material = new THREE.ShaderMaterial( 
+				{
+					uniforms: birdUniforms,
+					attributes: birdAttributes,
+					vertexShader:   ShaderStorage['pointVS'],
+					fragmentShader: ShaderStorage['pointFS'],
+					
+					blending: THREE.NormalBlending ,
+					blendSrc: THREE.SrcAlphaFactor,
+					blendDst: THREE.OneMinusSrcAlphaFactor,
+					blendEquation: THREE.AddEquation,
+					
+					transparent: true,
+
+					depthTest: false,
+					depthWrite: false,
+					colorWrite: true,
+					
+				});
+				
+				if (typeof(particleSystem) != "undefined")
+					scene.remove(particleSystem);
+				
+				particleSystem = new THREE.PointCloud( geometry, material );
+				scene.add( particleSystem );
+			}
+			
+			setupBackgroundTexture();
+		}
+	
+		function setupBackgroundTexture()
+		{
+			if (typeof(backgroundMesh) != "undefined")
+			{
+				scene.remove(backgroundMesh);
+			}
+			
+			var positionShader = new THREE.ShaderMaterial( 
+			{
+				uniforms:
+				{
+					time: { type: "f", value: 1.0 },
+					delta: { type: "f", value: 0.0 },
+					resolution: { type: "v2", value: new THREE.Vector2( 1024.0, 1024.0 ) },
+					textureForce: { type: "t", value: simulator.getForce() },
+				},
+				vertexShader: ShaderStorage['backgroundVertexShader'],
+				fragmentShader: ShaderStorage['backgroundFragmentShaderPosition'],
+			} );
+			
+			backgroundMesh = new THREE.Mesh(new THREE.PlaneBufferGeometry( simulator.getBounds(), simulator.getBounds(), 1, 1), positionShader);
+			backgroundMesh.position.set(0,0,0);
+			backgroundMesh.visible = false;
+			
+			scene.add( backgroundMesh );
+		}
+		
+		function setupStats()
+		{
+			stats = new Stats();
+			stats.domElement.style.position = 'absolute';
+			stats.domElement.style.top = '0px';
+			container.appendChild( stats.domElement );
+		}
+		
+		function setupGUI()
+		{
+			var gui = new dat.GUI();
+
+			effectController =
+			{
+				DrawBackground: false,
+				PointSize: 2.0,
+				PointAlpha: 0.25,
+				ParticlePower: 16,
+				MaxSpeed: 50,
+				BrushSize: 0.05,
+				BrushRandom: 1.0
+			};
+			
+			window.effectController = effectController;
+
+			var sceneFolder = gui.addFolder("Scene");
+			
+			sceneFolder.add( effectController, "ParticlePower").min(2).max(23).step(1).name("Particles").listen().onFinishChange(function()
+			{
+				effectController.PointSize = 1.0;
+				effectController.PointAlpha = 0.03;
+
+				for (var i in gui.__controllers) {
+					gui.__controllers[i].updateDisplay();
+				}
+
+				setupParticles(Math.pow(2, effectController.ParticlePower));
+			});
+			
+			sceneFolder.open();
+			
+			var pointFolder = gui.addFolder("Visual");
+			{
+				pointFolder.add( effectController, "PointSize").min(0.01).max(10.0).name("Size");
+				pointFolder.add( effectController, "PointAlpha").min(0.01).max(0.5).name("Alpha");
+			}
+			pointFolder.open();
+			
+			var behaviourFolder = gui.addFolder("Behaviour")
+			{
+				behaviourFolder.add( effectController, "MaxSpeed").min(1.0).max(100.0).name("Speed");
+			}
+			behaviourFolder.open();
+
+			var brushFolder = gui.addFolder("Brush")
+			{
+				brushFolder.add( effectController, "BrushSize").min(0.01).max(0.10).name("Size");
+				brushFolder.add( effectController, "BrushRandom").min(0.0).max(1.00).name("Random");
+
+				brushFolder.add( effectController, "DrawBackground").name("Draw Background").onChange(function()
+				{
+					backgroundMesh.visible = effectController.DrawBackground;
+				});
+			}
+			brushFolder.open();
+
+			gui.open();
+		}
+		
+		function setupRenderer()
+		{
+			renderer = new THREE.WebGLRenderer(
+			{ 
+				antialias: false,
+				alpha:true,
+			});
+			
+			renderer.setClearColor( 0xffffff, 1);
+			renderer.setPixelRatio( window.devicePixelRatio );
+			renderer.setSize( window.innerWidth, window.innerHeight );
+			container.appendChild( renderer.domElement );
+			
+			renderer.domElement.addEventListener( 'mousemove', onDocumentMouseMove, false );
+			renderer.domElement.addEventListener( 'mousedown', onDocumentMouseDown, false );
+			renderer.domElement.addEventListener( 'mouseup', onDocumentMouseUp, false );
+		}
+		
+		function setup()
+		{
+			container = document.getElementById( 'container' );
+
+			camera = new THREE.PerspectiveCamera(27, window.innerWidth / window.innerHeight, 5, 3500);
+			camera.position.z = 2750;
+
+			scene = new THREE.Scene();
+			scene.fog = new THREE.Fog( 0x050505, 2000, 3500 );
+			
+			setupStats();
+			
+			setupGUI();
+			
+			setupRenderer();
+			
+			effectController.ParticlePower = effectController.ParticlePower;
+			
+			setupParticles(Math.pow(2, effectController.ParticlePower))
+			
+			window.addEventListener( 'resize', onWindowResize, false);
+		}
+		
+		var mouse = new THREE.Vector2();
+		
+		function onDocumentMouseMove(event)
+		{
+			event.preventDefault();
+
+			var x = ( event.clientX / window.innerWidth ) * 2 - 1;
+			var y = -( event.clientY / window.innerHeight ) * 2 + 1;
+			
+			simulator.lastMousePos = simulator.nowMousePos;
+		
+			var vector = new THREE.Vector3();
+
+			vector.set(
+				( event.clientX / window.innerWidth ) * 2 - 1,
+				-( event.clientY / window.innerHeight ) * 2 + 1,
+				0.5 );
+
+			vector.unproject( camera );
+
+			var dir = vector.sub( camera.position ).normalize();
+
+			var distance = - camera.position.z / dir.z;
+
+			var pos = camera.position.clone().add( dir.multiplyScalar( distance ) );
+						
+			pos.x = ((pos.x + 1024.0) / 2.0) / 1024.0;
+			pos.y = ((pos.y + 1024.0) / 2.0) / 1024.0;
+			
+			simulator.nowMousePos = new THREE.Vector2(pos.x, pos.y);
+		}
+		
+		function onDocumentMouseDown(event)
+		{
+			event.preventDefault();
+
+			simulator.flipping = true;
+		}
+		
+		function onDocumentMouseUp(event)
+		{
+			event.preventDefault();
+			
+			simulator.flipping = false;
+		}
+		
+		function onWindowResize()
+		{
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+
+			renderer.setSize( window.innerWidth, window.innerHeight );
+		}
+			
+		$(document).ready(function()
+		{
+			container = document.getElementById( 'container' );
+
+			if (container == null)
+				return;
+				
+			loadShaders(function()
+			{
+				setup();
+				animate();
+			});
+		});
+		</script>
+	</head>
+	<body>
+		<div id="container"></div>
+	</body>
+</html>
